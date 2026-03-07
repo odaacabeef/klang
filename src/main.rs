@@ -1,4 +1,5 @@
 mod info;
+mod master;
 mod normalize;
 
 use clap::{Parser, Subcommand};
@@ -14,6 +15,8 @@ struct Cli {
 enum Commands {
     /// Print WAV file metadata
     Info(info::Args),
+    /// Apply a mastering chain: high-pass filter, compression, limiting, and normalization
+    Master(master::Args),
     /// Normalize audio to peak amplitude
     Normalize(normalize::Args),
 }
@@ -23,6 +26,7 @@ fn main() {
 
     let result = match cli.command {
         Commands::Info(args) => info::run(args),
+        Commands::Master(args) => master::run(args),
         Commands::Normalize(args) => normalize::run(args),
     };
 
