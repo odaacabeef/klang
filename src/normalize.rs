@@ -2,6 +2,15 @@ use std::path::PathBuf;
 
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 
+fn parse_target_db(s: &str) -> Result<f32, String> {
+    let v: f32 = s.parse().map_err(|_| "must be a number".to_string())?;
+    if (-20.0..=0.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err("must be between -20 and 0 dBFS".to_string())
+    }
+}
+
 #[derive(clap::Args)]
 pub struct Args {
     /// Input WAV file
@@ -11,8 +20,8 @@ pub struct Args {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// Target peak level in dBFS (default: 0.0)
-    #[arg(short, long, default_value_t = 0.0)]
+    /// Target peak level in dBFS (-20 to 0)
+    #[arg(short, long, default_value_t = 0.0, value_parser = parse_target_db)]
     target_db: f32,
 }
 

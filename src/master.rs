@@ -2,6 +2,60 @@ use std::path::PathBuf;
 
 use hound::{SampleFormat, WavReader, WavSpec, WavWriter};
 
+fn parse_highpass_hz(s: &str) -> Result<f32, String> {
+    let v: f32 = s.parse().map_err(|_| "must be a number".to_string())?;
+    if v > 0.0 && v <= 20000.0 {
+        Ok(v)
+    } else {
+        Err("must be between 0 and 20000 Hz".to_string())
+    }
+}
+
+fn parse_comp_threshold_db(s: &str) -> Result<f32, String> {
+    let v: f32 = s.parse().map_err(|_| "must be a number".to_string())?;
+    if (-60.0..=-1.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err("must be between -60 and -1 dBFS".to_string())
+    }
+}
+
+fn parse_comp_ratio(s: &str) -> Result<f32, String> {
+    let v: f32 = s.parse().map_err(|_| "must be a number".to_string())?;
+    if (1.0..=20.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err("must be between 1.0 and 20.0".to_string())
+    }
+}
+
+fn parse_attack_ms(s: &str) -> Result<f32, String> {
+    let v: f32 = s.parse().map_err(|_| "must be a number".to_string())?;
+    if (0.1..=500.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err("must be between 0.1 and 500 ms".to_string())
+    }
+}
+
+fn parse_release_ms(s: &str) -> Result<f32, String> {
+    let v: f32 = s.parse().map_err(|_| "must be a number".to_string())?;
+    if (1.0..=2000.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err("must be between 1 and 2000 ms".to_string())
+    }
+}
+
+fn parse_db_ceiling(s: &str) -> Result<f32, String> {
+    let v: f32 = s.parse().map_err(|_| "must be a number".to_string())?;
+    if (-20.0..=0.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err("must be between -20 and 0 dBFS".to_string())
+    }
+}
+
 #[derive(clap::Args)]
 pub struct Args {
     /// Input WAV file
@@ -11,32 +65,32 @@ pub struct Args {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
-    /// High-pass filter cutoff in Hz
-    #[arg(long, default_value_t = 30.0)]
+    /// High-pass filter cutoff in Hz (0–20000)
+    #[arg(long, default_value_t = 30.0, value_parser = parse_highpass_hz)]
     highpass_hz: f32,
 
-    /// Compressor threshold in dBFS
-    #[arg(long, default_value_t = -18.0)]
+    /// Compressor threshold in dBFS (-60 to -1)
+    #[arg(long, default_value_t = -18.0, value_parser = parse_comp_threshold_db)]
     comp_threshold_db: f32,
 
-    /// Compressor ratio (e.g. 3.0 = 3:1)
-    #[arg(long, default_value_t = 3.0)]
+    /// Compressor ratio, e.g. 3.0 = 3:1 (1.0–20.0)
+    #[arg(long, default_value_t = 3.0, value_parser = parse_comp_ratio)]
     comp_ratio: f32,
 
-    /// Compressor attack in milliseconds
-    #[arg(long, default_value_t = 10.0)]
+    /// Compressor attack in milliseconds (0.1–500)
+    #[arg(long, default_value_t = 10.0, value_parser = parse_attack_ms)]
     comp_attack_ms: f32,
 
-    /// Compressor release in milliseconds
-    #[arg(long, default_value_t = 100.0)]
+    /// Compressor release in milliseconds (1–2000)
+    #[arg(long, default_value_t = 100.0, value_parser = parse_release_ms)]
     comp_release_ms: f32,
 
-    /// Limiter ceiling in dBFS
-    #[arg(long, default_value_t = -1.0)]
+    /// Limiter ceiling in dBFS (-20 to 0)
+    #[arg(long, default_value_t = -1.0, value_parser = parse_db_ceiling)]
     limiter_ceiling_db: f32,
 
-    /// Output peak target in dBFS
-    #[arg(short, long, default_value_t = -1.0)]
+    /// Output peak target in dBFS (-20 to 0)
+    #[arg(short, long, default_value_t = -1.0, value_parser = parse_db_ceiling)]
     target_db: f32,
 }
 

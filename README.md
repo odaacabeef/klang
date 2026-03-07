@@ -44,10 +44,10 @@ klang normalize [OPTIONS] <INPUT>
 
 **Options:**
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-o, --output <FILE>` | Output file (omit to overwrite input) | in-place |
-| `-t, --target-db <DB>` | Target peak level in dBFS | `0.0` |
+| Flag | Description | Range | Default |
+|------|-------------|-------|---------|
+| `-o, --output <FILE>` | Output file (omit to overwrite input) | | in-place |
+| `-t, --target-db <DB>` | Target peak level in dBFS | -20 to 0 dBFS | `0.0` |
 
 **Examples:**
 
@@ -74,16 +74,16 @@ klang master [OPTIONS] <INPUT>
 
 **Options:**
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-o, --output <FILE>` | Output file (omit to overwrite input) | in-place |
-| `--highpass-hz <HZ>` | High-pass filter cutoff | `30.0` |
-| `--comp-threshold-db <DB>` | Compressor threshold | `-18.0` |
-| `--comp-ratio <RATIO>` | Compressor ratio | `3.0` |
-| `--comp-attack-ms <MS>` | Compressor attack time | `10.0` |
-| `--comp-release-ms <MS>` | Compressor release time | `100.0` |
-| `--limiter-ceiling-db <DB>` | Limiter ceiling | `-1.0` |
-| `-t, --target-db <DB>` | Output peak target | `-1.0` |
+| Flag | Description | Range | Default |
+|------|-------------|-------|---------|
+| `-o, --output <FILE>` | Output file (omit to overwrite input) | | in-place |
+| `--highpass-hz <HZ>` | High-pass filter cutoff | 0–20000 Hz | `30.0` |
+| `--comp-threshold-db <DB>` | Compressor threshold | -60 to -1 dBFS | `-18.0` |
+| `--comp-ratio <RATIO>` | Compressor ratio (1.0 = no compression) | 1.0–20.0 | `3.0` |
+| `--comp-attack-ms <MS>` | Compressor attack time | 0.1–500 ms | `10.0` |
+| `--comp-release-ms <MS>` | Compressor release time | 1–2000 ms | `100.0` |
+| `--limiter-ceiling-db <DB>` | Limiter ceiling | -20 to 0 dBFS | `-1.0` |
+| `-t, --target-db <DB>` | Output peak target | -20 to 0 dBFS | `-1.0` |
 
 **Examples:**
 
