@@ -35,9 +35,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     // Read all samples as f32 for processing
     let samples: Vec<f32> = match spec.sample_format {
-        SampleFormat::Float => reader
-            .samples::<f32>()
-            .collect::<Result<_, _>>()?,
+        SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,
         SampleFormat::Int => {
             let max_val = (1i64 << (spec.bits_per_sample - 1)) as f32;
             reader

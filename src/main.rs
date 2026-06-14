@@ -1,3 +1,4 @@
+mod glitch;
 mod info;
 mod master;
 mod normalize;
@@ -13,6 +14,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Slice interesting moments from inputs into a rhythmic, glitchy mashup
+    Glitch(glitch::Args),
     /// Print WAV file metadata
     Info(info::Args),
     /// Apply a mastering chain: high-pass filter, compression, limiting, and normalization
@@ -25,6 +28,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
+        Commands::Glitch(args) => glitch::run(args),
         Commands::Info(args) => info::run(args),
         Commands::Master(args) => master::run(args),
         Commands::Normalize(args) => normalize::run(args),

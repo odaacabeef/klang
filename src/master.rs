@@ -150,7 +150,11 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             SampleFormat::Int => {
                 let max_val = (1i64 << (spec.bits_per_sample - 1)) as f32;
                 for s in &samples {
-                    write_int_sample(&mut writer, (s * max_val).clamp(-max_val, max_val - 1.0) as i64, spec)?;
+                    write_int_sample(
+                        &mut writer,
+                        (s * max_val).clamp(-max_val, max_val - 1.0) as i64,
+                        spec,
+                    )?;
                 }
             }
         }
@@ -227,7 +231,11 @@ fn compress(
             .map(|c| samples[f * channels + c].abs())
             .fold(0f32, f32::max);
 
-        let coeff = if peak > envelope { attack_coeff } else { release_coeff };
+        let coeff = if peak > envelope {
+            attack_coeff
+        } else {
+            release_coeff
+        };
         envelope = coeff * envelope + (1.0 - coeff) * peak;
 
         let gain = if envelope > threshold_linear {
