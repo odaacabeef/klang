@@ -72,6 +72,17 @@ fn parse_gate(s: &str) -> Result<f32, String> {
     }
 }
 
+fn parse_max_length(s: &str) -> Result<u32, String> {
+    let v: u32 = s
+        .parse()
+        .map_err(|_| "must be a whole number".to_string())?;
+    if (1..=64).contains(&v) {
+        Ok(v)
+    } else {
+        Err("must be between 1 and 64".to_string())
+    }
+}
+
 #[derive(clap::Args)]
 pub struct Args {
     /// Input WAV files (one or more)
@@ -106,7 +117,12 @@ pub struct Args {
     #[arg(long, default_value_t = 0.0, value_parser = parse_unit)]
     swing: f32,
 
-    /// Slice length as a fraction of one step, 0.0–1.0 (lower = choppier)
+    /// Maximum slice length in grid steps; each hit is a random 1..N (1–64)
+    #[arg(long, default_value_t = 4, value_parser = parse_max_length)]
+    max_length: u32,
+
+    /// Fraction of each slice's length that sounds, 0.0–1.0 (1.0 = exact grid
+    /// multiple; lower = choppier)
     #[arg(long, default_value_t = 1.0, value_parser = parse_gate)]
     gate: f32,
 
@@ -218,18 +234,20 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let step_dur_secs = 240.0 / (args.resolution as f32 * args.bpm);
     let total_frames = (total_steps as f32 * step_dur_secs * sample_rate).round() as usize;
 
-    // Roll the pattern: which steps fire, and which slice each one plays.
+    // Roll the pattern: which steps fire, the slice each plays, and how many
+    // grid steps long it is (a random 1..=max_length).
     let mut rng = Rng::new(seed);
     let pattern_len = if args.repeat {
         steps_per_bar
     } else {
         total_steps
     };
-    let mut pattern: Vec<Option<usize>> = Vec::with_capacity(pattern_len);
+    let mut pattern: Vec<Option<(usize, usize)>> = Vec::with_capacity(pattern_len);
     for _ in 0..pattern_len {
         if rng.next_f32() < args.density {
             let idx = (rng.next_u64() % pool.len() as u64) as usize;
-            pattern.push(Some(idx));
+            let length_steps = (rng.next_u64() % args.max_length as u64) as usize + 1;
+            pattern.push(Some((idx, length_steps)));
         } else {
             pattern.push(None);
         }
@@ -241,7 +259,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let mut hits = 0;
 
     for s in 0..total_steps {
-        let Some(idx) = pattern[s % pattern_len] else {
+        let Some((idx, length_steps)) = pattern[s % pattern_len] else {
             continue;
         };
 
@@ -255,10 +273,12 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         }
         hits += 1;
 
-        let gate_frames = ((args.gate * step_dur_secs * sample_rate).round() as usize).max(1);
+        // The hit spans `length_steps` grid steps; `gate` trims how much sounds.
+        let slot_secs = length_steps as f32 * step_dur_secs * args.gate;
+        let slot_frames = ((slot_secs * sample_rate).round() as usize).max(1);
         let slice = &pool[idx];
         let slice_frames = slice.len() / channels;
-        let play = gate_frames
+        let play = slot_frames
             .min(slice_frames)
             .min(total_frames - start_frame);
         let fade = fade_frames.min(play / 2).max(1);
@@ -330,6 +350,10 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         total_steps,
         args.density,
         if args.repeat { ", repeating" } else { "" }
+    );
+    println!(
+        "  Lengths:     1–{} steps (gate {:.2})",
+        args.max_length, args.gate
     );
     println!("  Seed:        {}", seed);
 

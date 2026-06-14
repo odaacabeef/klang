@@ -118,8 +118,10 @@ a tempo-driven grid to produce a rhythmic, glitchy mashup.
 
 The command detects onsets (transients) in each input, builds a pool of slices,
 then walks a grid defined by the tempo, time signature, and resolution — firing
-slices according to `--density` and `--swing`. Output is normalized to -1 dBFS.
-Pass a `--seed` for reproducible results.
+slices according to `--density` and `--swing`. Each fired step plays for a random
+number of grid steps (`1` to `--max-length`), so hit lengths vary while staying
+aligned to the grid. Output is normalized to -1 dBFS. Pass a `--seed` for
+reproducible results.
 
 ```sh
 klang glitch [OPTIONS] --output <OUTPUT> <INPUTS>...
@@ -136,7 +138,8 @@ klang glitch [OPTIONS] --output <OUTPUT> <INPUTS>...
 | `--resolution <DIV>` | Grid resolution (note division) | 1, 2, 4, 8, 16, 32, 64 | `16` |
 | `--density <P>` | Probability each step fires (lower = sparser) | 0.0–1.0 | `0.5` |
 | `--swing <AMT>` | Delays off-beat steps for groove | 0.0–1.0 | `0.0` |
-| `--gate <FRAC>` | Slice length as a fraction of a step (lower = choppier) | 0.0–1.0 | `1.0` |
+| `--max-length <STEPS>` | Max hit length in grid steps; each hit is a random `1..N` | 1–64 | `4` |
+| `--gate <FRAC>` | Fraction of each hit's length that sounds (`1.0` = exact grid multiple; lower = choppier) | 0.0–1.0 | `1.0` |
 | `--sensitivity <S>` | Onset detection sensitivity (higher = more slices) | 0.0–1.0 | `0.5` |
 | `--repeat` | Repeat a single bar's pattern instead of re-rolling each bar | flag | off |
 | `--seed <N>` | RNG seed (omit for a random seed) | | random |
@@ -156,6 +159,9 @@ klang glitch drums.wav vocals.wav -o loop.wav \
 
 # Repeating one-bar pattern in 6/8
 klang glitch perc.wav -o groove.wav --time-sig 6/8 --resolution 8 --repeat
+
+# Longer, more sustained hits (up to 8 steps each)
+klang glitch pads.wav -o sustained.wav --max-length 8 --density 0.4
 ```
 
 **Example output:**
@@ -167,5 +173,6 @@ Glitched:
   Tempo:       120 BPM, 4/4, 1/16 grid
   Length:      4 bars (8.00s), 64 steps
   Hits:        33 / 64 (density 0.50)
+  Lengths:     1–4 steps (gate 1.00)
   Seed:        42
 ```
