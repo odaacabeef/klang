@@ -93,6 +93,13 @@ pub struct Args {
     #[arg(short, long)]
     output: PathBuf,
 
+    /// Reference WAV whose onset timing and amplitude shape the output. When
+    /// set, only --sensitivity and --seed apply; the grid options (bpm, bars,
+    /// time-sig, resolution, density, swing, max-length, gate, repeat) are
+    /// ignored.
+    #[arg(long)]
+    template: Option<PathBuf>,
+
     /// Tempo in BPM (20–300)
     #[arg(long, default_value_t = 120.0, value_parser = parse_bpm)]
     bpm: f32,
@@ -220,87 +227,198 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         return Err("no usable audio found in the inputs".into());
     }
 
-    // Build the grid from tempo + time signature + resolution.
-    let (num, den) = args.time_sig;
-    if !(num * args.resolution).is_multiple_of(den) {
-        return Err(format!(
-            "a {}/{} bar does not divide evenly into 1/{} steps; try a finer --resolution",
-            num, den, args.resolution
-        )
-        .into());
-    }
-    let steps_per_bar = (num * args.resolution / den) as usize;
-    let total_steps = steps_per_bar * args.bars as usize;
-    let step_dur_secs = 240.0 / (args.resolution as f32 * args.bpm);
-    let total_frames = (total_steps as f32 * step_dur_secs * sample_rate).round() as usize;
-
-    // Roll the pattern: which steps fire, the slice each plays, and how many
-    // grid steps long it is (a random 1..=max_length).
     let mut rng = Rng::new(seed);
-    let pattern_len = if args.repeat {
-        steps_per_bar
-    } else {
-        total_steps
-    };
-    let mut pattern: Vec<Option<(usize, usize)>> = Vec::with_capacity(pattern_len);
-    for _ in 0..pattern_len {
-        if rng.next_f32() < args.density {
-            let idx = (rng.next_u64() % pool.len() as u64) as usize;
-            let length_steps = (rng.next_u64() % args.max_length as u64) as usize + 1;
-            pattern.push(Some((idx, length_steps)));
-        } else {
-            pattern.push(None);
-        }
-    }
-
-    // Render: place each fired slice at its (swung) step time.
-    let mut out = vec![0f32; total_frames * channels];
     let fade_frames = ((sample_rate * 0.003) as usize).max(1);
-    let mut hits = 0;
 
-    for s in 0..total_steps {
-        let Some((idx, length_steps)) = pattern[s % pattern_len] else {
-            continue;
+    // Build the output buffer from either a reference template or the grid.
+    let (mut out, report): (Vec<f32>, Vec<String>) = if let Some(template_path) = &args.template {
+        // Template mode: follow the template's onset timing and amplitude,
+        // rebuilding it from the input slices. Grid options are ignored.
+        let (t_samples, t_spec) = read_samples(template_path)?;
+        if t_spec.sample_rate != spec.sample_rate {
+            return Err(format!(
+                "sample rate mismatch: template {} is {} Hz but the inputs are {} Hz",
+                template_path.display(),
+                t_spec.sample_rate,
+                spec.sample_rate
+            )
+            .into());
+        }
+        let template = conform_channels(&t_samples, t_spec.channels as usize, channels);
+        let template_frames = template.len() / channels;
+        if template_frames == 0 {
+            return Err("template file is empty".into());
+        }
+        let onsets = detect_onsets(&template, channels, sample_rate, args.sensitivity);
+
+        let mut out = vec![0f32; template_frames * channels];
+        let mut placed = 0;
+        for k in 0..onsets.len() {
+            let start_frame = onsets[k];
+            let end_frame = onsets.get(k + 1).copied().unwrap_or(template_frames);
+
+            // The template's peak over this window sets how loud the slice plays.
+            let mut target_amp = 0f32;
+            for f in start_frame..end_frame {
+                for c in 0..channels {
+                    target_amp = target_amp.max(template[f * channels + c].abs());
+                }
+            }
+            if target_amp == 0.0 {
+                continue; // a silent stretch of the template stays silent
+            }
+
+            // The slice rings until the template's next onset.
+            let idx = (rng.next_u64() % pool.len() as u64) as usize;
+            let slice = &pool[idx];
+            let slice_frames = slice.len() / channels;
+            let play = (end_frame - start_frame).min(slice_frames);
+            if play == 0 {
+                continue;
+            }
+
+            // Scale the slice so its peak matches the template's local amplitude.
+            let mut slice_peak = 0f32;
+            for f in 0..play {
+                for c in 0..channels {
+                    slice_peak = slice_peak.max(slice[f * channels + c].abs());
+                }
+            }
+            if slice_peak == 0.0 {
+                continue;
+            }
+            let gain = target_amp / slice_peak;
+
+            let fade = fade_frames.min(play / 2).max(1);
+            for f in 0..play {
+                let env = if f < fade {
+                    f as f32 / fade as f32
+                } else if f >= play - fade {
+                    (play - f) as f32 / fade as f32
+                } else {
+                    1.0
+                };
+                for c in 0..channels {
+                    out[(start_frame + f) * channels + c] += slice[f * channels + c] * gain * env;
+                }
+            }
+            placed += 1;
+        }
+
+        let report = vec![
+            format!(
+                "  Template:    {} ({:.2}s, {} events)",
+                template_path.display(),
+                template_frames as f32 / sample_rate,
+                onsets.len()
+            ),
+            format!("  Placed:      {} slices (timing + amplitude)", placed),
+        ];
+        (out, report)
+    } else {
+        // Grid mode: a tempo/time-signature grid fired by --density.
+        let (num, den) = args.time_sig;
+        if !(num * args.resolution).is_multiple_of(den) {
+            return Err(format!(
+                "a {}/{} bar does not divide evenly into 1/{} steps; try a finer --resolution",
+                num, den, args.resolution
+            )
+            .into());
+        }
+        let steps_per_bar = (num * args.resolution / den) as usize;
+        let total_steps = steps_per_bar * args.bars as usize;
+        let step_dur_secs = 240.0 / (args.resolution as f32 * args.bpm);
+        let total_frames = (total_steps as f32 * step_dur_secs * sample_rate).round() as usize;
+
+        // Roll the pattern: which steps fire, the slice each plays, and how many
+        // grid steps long it is (a random 1..=max_length).
+        let pattern_len = if args.repeat {
+            steps_per_bar
+        } else {
+            total_steps
         };
-
-        let mut start_secs = s as f32 * step_dur_secs;
-        if s % 2 == 1 {
-            start_secs += args.swing * step_dur_secs * 0.5;
-        }
-        let start_frame = (start_secs * sample_rate).round() as usize;
-        if start_frame >= total_frames {
-            continue;
-        }
-        hits += 1;
-
-        // The hit spans `length_steps` grid steps; `gate` trims how much sounds.
-        let slot_secs = length_steps as f32 * step_dur_secs * args.gate;
-        let slot_frames = ((slot_secs * sample_rate).round() as usize).max(1);
-        let slice = &pool[idx];
-        let slice_frames = slice.len() / channels;
-        let play = slot_frames
-            .min(slice_frames)
-            .min(total_frames - start_frame);
-        let fade = fade_frames.min(play / 2).max(1);
-
-        for f in 0..play {
-            let env = if f < fade {
-                f as f32 / fade as f32
-            } else if f >= play - fade {
-                (play - f) as f32 / fade as f32
+        let mut pattern: Vec<Option<(usize, usize)>> = Vec::with_capacity(pattern_len);
+        for _ in 0..pattern_len {
+            if rng.next_f32() < args.density {
+                let idx = (rng.next_u64() % pool.len() as u64) as usize;
+                let length_steps = (rng.next_u64() % args.max_length as u64) as usize + 1;
+                pattern.push(Some((idx, length_steps)));
             } else {
-                1.0
-            };
-            for c in 0..channels {
-                out[(start_frame + f) * channels + c] += slice[f * channels + c] * env;
+                pattern.push(None);
             }
         }
-    }
+
+        // Render: place each fired slice at its (swung) step time.
+        let mut out = vec![0f32; total_frames * channels];
+        let mut hits = 0;
+        for s in 0..total_steps {
+            let Some((idx, length_steps)) = pattern[s % pattern_len] else {
+                continue;
+            };
+
+            let mut start_secs = s as f32 * step_dur_secs;
+            if s % 2 == 1 {
+                start_secs += args.swing * step_dur_secs * 0.5;
+            }
+            let start_frame = (start_secs * sample_rate).round() as usize;
+            if start_frame >= total_frames {
+                continue;
+            }
+            hits += 1;
+
+            // The hit spans `length_steps` grid steps; `gate` trims how much sounds.
+            let slot_secs = length_steps as f32 * step_dur_secs * args.gate;
+            let slot_frames = ((slot_secs * sample_rate).round() as usize).max(1);
+            let slice = &pool[idx];
+            let slice_frames = slice.len() / channels;
+            let play = slot_frames
+                .min(slice_frames)
+                .min(total_frames - start_frame);
+            let fade = fade_frames.min(play / 2).max(1);
+
+            for f in 0..play {
+                let env = if f < fade {
+                    f as f32 / fade as f32
+                } else if f >= play - fade {
+                    (play - f) as f32 / fade as f32
+                } else {
+                    1.0
+                };
+                for c in 0..channels {
+                    out[(start_frame + f) * channels + c] += slice[f * channels + c] * env;
+                }
+            }
+        }
+
+        let total_secs = total_frames as f32 / sample_rate;
+        let report = vec![
+            format!(
+                "  Tempo:       {} BPM, {}/{}, 1/{} grid",
+                args.bpm, num, den, args.resolution
+            ),
+            format!(
+                "  Length:      {} bars ({:.2}s), {} steps",
+                args.bars, total_secs, total_steps
+            ),
+            format!(
+                "  Hits:        {} / {} (density {:.2}{})",
+                hits,
+                total_steps,
+                args.density,
+                if args.repeat { ", repeating" } else { "" }
+            ),
+            format!(
+                "  Lengths:     1–{} steps (gate {:.2})",
+                args.max_length, args.gate
+            ),
+        ];
+        (out, report)
+    };
 
     // Normalize to a safe ceiling so overlapping hits never clip.
     let peak = out.iter().map(|s| s.abs()).fold(0f32, f32::max);
     if peak == 0.0 {
-        return Err("generated audio is silent; try a higher --density or --gate".into());
+        return Err("generated audio is silent".into());
     }
     let target_db = -1.0;
     let gain = 10f32.powf(target_db / 20.0) / peak;
@@ -329,32 +447,15 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     }
     std::fs::rename(&tmp_path, &args.output)?;
 
-    let total_secs = total_frames as f32 / sample_rate;
     println!("Glitched:");
     println!(
         "  Inputs:      {} file(s), {} slices",
         args.inputs.len(),
         pool.len()
     );
-    println!(
-        "  Tempo:       {} BPM, {}/{}, 1/{} grid",
-        args.bpm, num, den, args.resolution
-    );
-    println!(
-        "  Length:      {} bars ({:.2}s), {} steps",
-        args.bars, total_secs, total_steps
-    );
-    println!(
-        "  Hits:        {} / {} (density {:.2}{})",
-        hits,
-        total_steps,
-        args.density,
-        if args.repeat { ", repeating" } else { "" }
-    );
-    println!(
-        "  Lengths:     1–{} steps (gate {:.2})",
-        args.max_length, args.gate
-    );
+    for line in &report {
+        println!("{line}");
+    }
     println!("  Seed:        {}", seed);
 
     Ok(())
@@ -400,14 +501,15 @@ fn conform_channels(samples: &[f32], src_ch: usize, dst_ch: usize) -> Vec<f32> {
     out
 }
 
-/// Find onsets via an energy-novelty detection function and cut a slice from
-/// each onset to the next. Returns interleaved-f32 slices.
-fn slice_input(
+/// Find onsets via an energy-novelty detection function: block RMS energy, a
+/// half-wave-rectified first difference, an adaptive threshold, and peak
+/// picking. Returns the frame index of each onset.
+fn detect_onsets(
     samples: &[f32],
     channels: usize,
     sample_rate: f32,
     sensitivity: f32,
-) -> Vec<Vec<f32>> {
+) -> Vec<usize> {
     let frames = samples.len() / channels;
     if frames == 0 {
         return Vec::new();
@@ -425,48 +527,62 @@ fn slice_input(
 
     let block = ((sample_rate * 0.01) as usize).max(1); // ~10ms analysis blocks
     let nblocks = frames / block;
+    if nblocks < 3 {
+        return vec![0];
+    }
 
-    let onsets = if nblocks < 3 {
-        vec![0]
-    } else {
-        // Block RMS energy, then a half-wave-rectified first difference.
-        let mut energy = vec![0f32; nblocks];
-        for i in 0..nblocks {
-            let mut sum = 0f32;
-            for j in 0..block {
-                let v = mono[i * block + j];
-                sum += v * v;
+    // Block RMS energy, then a half-wave-rectified first difference.
+    let mut energy = vec![0f32; nblocks];
+    for i in 0..nblocks {
+        let mut sum = 0f32;
+        for j in 0..block {
+            let v = mono[i * block + j];
+            sum += v * v;
+        }
+        energy[i] = (sum / block as f32).sqrt();
+    }
+    let mut df = vec![0f32; nblocks];
+    for i in 1..nblocks {
+        df[i] = (energy[i] - energy[i - 1]).max(0.0);
+    }
+
+    // Adaptive threshold: mean rises toward mean+3σ as sensitivity drops.
+    let n = (nblocks - 1) as f32;
+    let mean = df[1..].iter().sum::<f32>() / n;
+    let var = df[1..].iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n;
+    let threshold = mean + (1.0 - sensitivity) * 3.0 * var.sqrt();
+
+    let min_gap = (sample_rate * 0.04) as usize; // ignore onsets <40ms apart
+    let mut onsets = Vec::new();
+    let mut last: Option<usize> = None;
+    for i in 1..nblocks - 1 {
+        if df[i] > threshold && df[i] >= df[i - 1] && df[i] > df[i + 1] {
+            let frame = i * block;
+            if last.is_none_or(|l| frame - l >= min_gap) {
+                onsets.push(frame);
+                last = Some(frame);
             }
-            energy[i] = (sum / block as f32).sqrt();
         }
-        let mut df = vec![0f32; nblocks];
-        for i in 1..nblocks {
-            df[i] = (energy[i] - energy[i - 1]).max(0.0);
-        }
+    }
+    if onsets.is_empty() {
+        onsets.push(0);
+    }
+    onsets
+}
 
-        // Adaptive threshold: mean rises toward mean+3σ as sensitivity drops.
-        let n = (nblocks - 1) as f32;
-        let mean = df[1..].iter().sum::<f32>() / n;
-        let var = df[1..].iter().map(|v| (v - mean) * (v - mean)).sum::<f32>() / n;
-        let threshold = mean + (1.0 - sensitivity) * 3.0 * var.sqrt();
-
-        let min_gap = (sample_rate * 0.04) as usize; // ignore onsets <40ms apart
-        let mut onsets = Vec::new();
-        let mut last: Option<usize> = None;
-        for i in 1..nblocks - 1 {
-            if df[i] > threshold && df[i] >= df[i - 1] && df[i] > df[i + 1] {
-                let frame = i * block;
-                if last.is_none_or(|l| frame - l >= min_gap) {
-                    onsets.push(frame);
-                    last = Some(frame);
-                }
-            }
-        }
-        if onsets.is_empty() {
-            onsets.push(0);
-        }
-        onsets
-    };
+/// Cut a slice from each detected onset to the next. Returns interleaved-f32
+/// slices.
+fn slice_input(
+    samples: &[f32],
+    channels: usize,
+    sample_rate: f32,
+    sensitivity: f32,
+) -> Vec<Vec<f32>> {
+    let frames = samples.len() / channels;
+    if frames == 0 {
+        return Vec::new();
+    }
+    let onsets = detect_onsets(samples, channels, sample_rate, sensitivity);
 
     let max_slice = (sample_rate * 2.0) as usize; // cap slice length at 2s
     let mut slices = Vec::with_capacity(onsets.len());
